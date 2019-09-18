@@ -1,0 +1,41 @@
+<RCC>
+    <qresource prefix="/new/prefix1">
+        <file>icons/arrow</file>
+        <file>icons/back.png</file>
+        <file>icons/cancel.png</file>
+        <file>icons/chat.png</file>
+        <file>icons/checked.png</file>
+        <file>icons/checkmark.png</file>
+        <file>icons/consulting-message.png</file>
+        <file>icons/global-server.png</file>
+        <file>icons/icon.png</file>
+        <file>icons/icons.qrc</file>
+        <file>icons/list.png</file>
+        <file>icons/menu</file>
+        <file>icons/parking-worker.png</file>
+        <file>icons/search</file>
+        <file>icons/server.png</file>
+        <file>icons/settingss.png</file>
+        <file>icons/tank-truck.png</file>
+        <file>icons/warning.png</file>
+        <file>icons/warning (1).png</file>
+        <file>icons/wifi.png</file>
+        <file>icons/IETT.png</file>
+        <file>icons/IETT-logo.png</file>
+        <file>icons/card2.png</file>
+        <file>icons/car_loading.gif</file>
+        <file>icons/filling.png</file>
+        <file>icons/fill.png</file>
+        <file>icons/gasoline-pump.png</file>
+        <file>icons/logo.png</file>
+        <file>icons/net-active.png</file>
+        <file>icons/net-false.png</file>
+        <file>icons/database1.png</file>
+        <file>icons/forward.png</file>
+        <file>icons/print-button.png</file>
+        <file>icons/logo6.png</file>
+        <file>icons/logo_fuar2.png</file>
+        <file>icons/Locwiz-02.gif</file>
+        <file>icons/looc.png</file>
+    </qresource>
+</RCC>

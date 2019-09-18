@@ -1,0 +1,683 @@
+#include "mainwindow.h"
+#include <QApplication>
+#include <QtSerialPort/QtSerialPort>
+#include "serial.h"
+#include "scproutine.h"
+#include "clrc.h"
+#include "customerscreen.h"
+#include "global.h"
+#include "main_routine.h"
+#include "updater.h"
+#include <QNetworkInterface>
+#include <QCryptographicHash>
+#include <stdio.h>
+#include <stdlib.h>
+#include "mytcpsocket.h"
+#include <QJsonObject>
+#include"syslog.h"
+
+
+QThread *serialThread[5];
+QTimer *serialTimer[5];
+int dec_to_bcd(int dec);
+Database *database;
+QByteArray convert_format(QByteArray data,unsigned char dot_ind);
+void initserial(int portnumber)
+{
+
+    SCPArray[portnumber] = new serialport(portnumber);
+    RoutineArray[portnumber] = new ScpRoutine();
+    //RoutineArray[portnumber]->setPriority(QThread::HighestPriority);
+    serialTimer[portnumber] = new QTimer;
+    serialThread[portnumber] = new QThread;
+    
+    if(portnumber==2) //Pompa
+    {
+        QObject::connect(serialTimer[portnumber],SIGNAL(timeout()),RoutineArray[portnumber],SLOT(routine_2()));
+    }
+    else if(portnumber==1) //Printer
+    {
+        QObject::connect(serialTimer[portnumber],SIGNAL(timeout()),RoutineArray[portnumber],SLOT(routine()));
+    }
+    else if(portnumber==3) //RFID
+    {
+        QObject::connect(serialTimer[portnumber],SIGNAL(timeout()),RoutineArray[portnumber],SLOT(routine_3()));
+    }
+    else if(portnumber==4) //USC
+    {
+        QObject::connect(serialTimer[portnumber],SIGNAL(timeout()),RoutineArray[portnumber],SLOT(routine_4()));
+    }
+    SCPArray[portnumber]->moveToThread(serialThread[portnumber]);
+    RoutineArray[portnumber]->moveToThread(serialThread[portnumber]);
+    
+    if(portnumber==2)
+    {
+        serialTimer[portnumber]->start(80);
+    }
+    else if(portnumber==1)
+    {
+        serialTimer[portnumber]->start(250);
+    }
+    else if(portnumber==3)
+    {
+        serialTimer[portnumber]->start(500);
+    }
+    else if(portnumber==4)
+    {
+        serialTimer[portnumber]->start(5);
+    }
+    serialTimer[portnumber]->moveToThread(serialThread[portnumber]);
+    serialThread[portnumber]->start();
+
+}
+
+
+void convert_bytearray_to_string()
+{
+    int ll;
+    QSettings settings(SettingsFile, QSettings::IniFormat);
+    DCR_par.DCR_Nozzle_Number=settings.value("DCR_par.DCR_Nozzle_Number", "").toInt(&ok);
+    DCR_par.Active_Nozzle=DCR_par.DCR_Nozzle_Number;
+    Number_of_Nozzle=settings.value("Number_of_Nozzle", "").toInt(&ok);
+
+    for(ll=1; ll<=Number_of_Nozzle;ll++)
+    {
+        pump[pumpNo].nozzle[ll].BT_Volume=settings.value("Begin_total_volume_"+QString::number(ll), "").toByteArray();
+        //qDebug()<<"Begin_total_volume_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].BT_Volume.toHex();
+        settings.setValue("Begin_total_volume_"+QString::number(ll),pump[pumpNo].nozzle[ll].BT_Volume.toHex());
+
+        pump[pumpNo].nozzle[ll].T_Volume=settings.value("End_total_volume_"+QString::number(ll), "").toByteArray();
+        settings.setValue("End_total_volume_"+QString::number(ll),pump[pumpNo].nozzle[ll].T_Volume.toHex());
+
+
+        pump[pumpNo].nozzle[ll].BT_Amount=settings.value("Begin_total_amount_"+QString::number(ll), "").toByteArray();
+        settings.setValue("Begin_total_amount_"+QString::number(ll),pump[pumpNo].nozzle[ll].BT_Amount.toHex());
+
+
+        pump[pumpNo].nozzle[ll].T_Amount=settings.value("End_total_amount_"+QString::number(ll), "").toByteArray();
+        settings.setValue("End_total_amount_"+QString::number(ll),pump[pumpNo].nozzle[ll].T_Amount.toHex());
+
+
+        pump[pumpNo].nozzle[ll].USC_T_Volume=settings.value("End_total_volume_USC_"+QString::number(ll), "").toByteArray();
+        settings.setValue("End_total_volume_USC_"+QString::number(ll),pump[pumpNo].nozzle[ll].USC_T_Volume.toHex());
+
+        pump[pumpNo].nozzle[ll].USC_T_Amount=settings.value("End_total_amount_USC_"+QString::number(ll), "").toByteArray();
+        settings.setValue("End_total_amount_USC_"+QString::number(ll),pump[pumpNo].nozzle[ll].USC_T_Amount.toHex());
+
+
+        pump[pumpNo].nozzle[ll].filling_price_for_USC=settings.value("filling_price_for_USC_"+QString::number(ll), "").toByteArray();
+        settings.setValue("filling_price_for_USC_"+QString::number(ll),pump[pumpNo].nozzle[ll].filling_price_for_USC.toHex());
+
+        pump[pumpNo].nozzle[ll].filling_volume_for_USC=settings.value("filling_volume_for_USC_"+QString::number(ll), "").toByteArray();
+        settings.setValue("filling_volume_for_USC_"+QString::number(ll),pump[pumpNo].nozzle[ll].filling_volume_for_USC.toHex());
+
+        pump[pumpNo].nozzle[ll].filling_amount_for_USC=settings.value("filling_amount_for_USC_"+QString::number(ll), "").toByteArray();
+        settings.setValue("filling_amount_for_USC_"+QString::number(ll),pump[pumpNo].nozzle[ll].filling_amount_for_USC.toHex());
+
+    }
+
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_price=settings.value("saved_unit_price", "").toByteArray();
+    settings.setValue("saved_unit_price",pump[pumpNo].nozzle[DCR_par.Active_Nozzle].filling_price.toHex());
+
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].PLATE=settings.value("last_customer_plate", "").toByteArray();
+    settings.setValue("last_customer_plate",pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].PLATE.toHex());
+
+    QByteArray Bytearraysaved_day=settings.value("saved_day", "").toByteArray();
+    //qDebug()<<"Bytearraysaved_day"<<Bytearraysaved_day<<Bytearraysaved_day.toHex()<<QString::fromLatin1(Bytearraysaved_day.toHex());
+    settings.setValue("saved_day",Bytearraysaved_day.toHex());
+
+    settings.setValue("change_file","1");
+
+    settings.setValue("Version_config", 0);
+
+}
+
+void convert_setting()
+{
+
+    QSettings settingconfig(SettingsFile, QSettings::IniFormat);
+    for(int i=0;i<settingconfig.childKeys().length();i++)
+    {
+        settings.setValue(settingconfig.childKeys().at(i),settingconfig.value(settingconfig.childKeys().at(i)));
+        //        sync();
+        //        system("sync");
+    }
+    //    QThread::msleep(2000);
+    //    system(command_reboot.toStdString().c_str());
+}
+
+
+void loadSettings()
+{
+    QString str;
+    using namespace std;
+    QVariant  cv;
+   // QSettings settings(SettingsFile, QSettings::IniFormat);
+    unsigned ll;
+
+    pumpNo=1;
+    ttspause=true;
+    //Number_of_Nozzle=4;
+    pump[pumpNo].status=0;
+    Number_of_TTS_Nozzle=1;
+    TTS_Nozzle[1]=1;
+    system_started=true;
+    if(IETT==true)
+    {
+        Myversion="1.1.20";  //CRC version
+    }
+    else
+    {
+        Myversion="1.1.21";  //crypted version
+    }
+
+    settings.setValue("Myversion",Myversion);
+    sync();
+    system("sync");
+    Number_of_Nozzle=settings.value("Number_of_Nozzle").toInt(&ok);
+    int tempcard_reader_address=settings.value("CardReader_Addr").toInt(&ok);
+    if(tempcard_reader_address>99){tempcard_reader_address=1;}
+    CardReader_Addr[0]=(tempcard_reader_address/10)+0x30;
+    CardReader_Addr[1]=(tempcard_reader_address%10)+0x30;
+    if(test)qDebug()<<"CardReader_Addr"<<CardReader_Addr.toHex()<<CardReader_Addr[0]<<CardReader_Addr[1];
+    DCR_par.DCR_Nozzle_Number=settings.value("DCR_par.DCR_Nozzle_Number").toInt(&ok);
+    DCR_par.Active_Nozzle=DCR_par.DCR_Nozzle_Number;
+    if(test)qDebug() <<"DCR_par.DCR_Nozzle_Number"<<DCR_par.DCR_Nozzle_Number;
+    syslog(LOG_DEBUG,"LOAD_SETTING DCR_par.DCR_Nozzle_Number %d",DCR_par.DCR_Nozzle_Number);
+    for(ll=1;ll<=Number_of_Nozzle;ll++)
+    {
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_amount[0]=0;
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_amount[1]=0;
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_amount[2]=0;
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_amount[3]=0;
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_volume[0]=0;
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_volume[1]=0;
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_volume[2]=0;
+        pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_volume[3]=0;
+        pump[pumpNo].nozzle[ll].unitprice[0]=0;
+        pump[pumpNo].nozzle[ll].unitprice[1]=0;
+        pump[pumpNo].nozzle[ll].unitprice[2]=0;
+        for(int bb=0; bb<16;bb++)
+        {
+            TAGID[ll][bb]=0;
+        }
+    }
+    for(quint8 jj=0;jj<TEXT_fromMaster.length();jj++)
+    {
+        TEXT_fromMaster[jj]=0x20;
+    }
+
+    USC_is_exist=true;
+
+    Nozzle_up_flg=settings.value("Nozzle_up_flg").toInt();
+    if(Nozzle_up_flg) clrc_up_flg=1;
+    Pump_Filling_status=settings.value("Pump_Filling_status").toBool();
+
+    TS_no=settings.value("TS_no").toInt(&ok);
+    fisno=TS_no;
+
+    //saha için şimdilik kapalı
+    wait_km_second=settings.value("wait_km_second").toInt(&ok);
+    dec_to_bcd(fisno);
+    pump[pumpNo].Fiscal_R_Number[1]=bcd[1];
+    pump[pumpNo].Fiscal_R_Number[0]=bcd[0];
+
+    printing_header_data[0]=settings.value("Printing_header_data_0").toString();
+    printing_header_data[1]=settings.value("Printing_header_data_1").toString();
+    printing_header_data[2]=settings.value("Printing_header_data_2").toString();
+    printing_header_data[3]=settings.value("Printing_header_data_3").toString();
+    End_info[0]=settings.value("Printing_End_info_0").toString();
+    End_info[1]=settings.value("Printing_End_info_1").toString();
+    commokpswrd=settings.value("commokpswrd").toString();
+    otopswrd=settings.value("otopswrd").toString();
+    usc_ip=settings.value("usc_ip").toString();
+    usc_port=settings.value("usc_port").toString();
+
+    Product_KDV=settings.value("Product_KDV").toInt(&ok);
+    Card_reader_chose=settings.value("Card_reader_chose").toBool();
+    Preset_Control_flg=settings.value("Preset_Control_flg").toBool();
+    table_name=settings.value("table_name").toString();
+    pump_sta=settings.value("pump_sta").toBool();
+    auttype_3_4=settings.value("auttype_3_4").toBool();
+    allow_button_plate=settings.value("allow_button_plate").toBool();
+    serial_debug_flg=settings.value("serial_debug_flg").toBool();
+    if(pump_sta==true) //satışta program kapandı ve databaseden önceki bilgileri alma buradan al
+    {
+        if(test)qDebug()<<"Program satışdayken gitti";
+        syslog(LOG_DEBUG," LOAD_SETTING Program satışdayken gitti");
+        Nozzle_Down_Time=QDateTime::currentDateTime().toString("yy-MM-dd hh:mm:ss");
+        Nozzle_Down_Time.prepend("20");
+        if(test)qDebug()<<"Nozzle_Down_Time"<<Nozzle_Down_Time;
+        syslog(LOG_DEBUG," LOAD_SETTING Nozzle_Down_Time %s",Nozzle_Down_Time.toLocal8Bit().constData());
+    }
+    TS_date=settings.value("TS_date").toString();
+    if(test)qDebug() <<"TS_date"<<TS_date;
+    TS_time=settings.value("TS_time").toString();
+    if(test)qDebug() <<"TS_time"<<TS_time;
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_price=QByteArray::fromHex(settings.value("saved_unit_price").toByteArray());
+    //qDebug()<<"deneme-filling_price"<<QByteArray::fromHex(pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_price).toHex()<<pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].filling_price;
+    Sale_Error_code=settings.value("Sale_Error_code").toInt(&ok);
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].BT_Volume=QByteArray::fromHex(settings.value("Begin_total_volume_"+QString::number(DCR_par.DCR_Nozzle_Number)).toByteArray());
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].T_Volume=QByteArray::fromHex(settings.value("End_total_volume_"+QString::number(DCR_par.DCR_Nozzle_Number)).toByteArray());
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].BT_Amount=QByteArray::fromHex(settings.value("Begin_total_amount_"+QString::number(DCR_par.DCR_Nozzle_Number)).toByteArray());
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].T_Amount=QByteArray::fromHex(settings.value("End_total_amount_"+QString::number(DCR_par.DCR_Nozzle_Number)).toByteArray());
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].FTYP=settings.value("FTYP").toInt(&ok);
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].CTYP=settings.value("CTYP").toInt(&ok);
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].ATYP=settings.value("ATYP").toInt(&ok);
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].STYP=settings.value("STYP").toInt(&ok);
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].PATYP=settings.value("PATYP").toInt(&ok);
+    pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].PLATE=QByteArray::fromHex(settings.value("last_customer_plate").toByteArray());
+    Nozzle_Up_Time=settings.value("Nozzle_Up_Time").toString();
+    RFID_Read_Time=settings.value("RFID_Read_Time").toString();
+    RFID_Result_Time=settings.value("RFID_Result_Time").toString();
+    Authorize_Time=settings.value("Authorize_Time").toString();
+    Filling_Start_Time=settings.value("Filling_Start_Time").toString();
+    Paid_Confrim_Time=settings.value("Paid_Confrim_Time").toString();
+    Paid_Fiscal_Time=settings.value("Paid_Fiscal_Time").toString();
+    pump[pumpNo].KM=settings.value("KM").toString();
+    Person_is_Ok=settings.value("Person_is_Ok").toBool();
+
+
+
+    number_of_salessave=settings.value("number_of_salessave").toInt();
+    ask_km_after=settings.value("ask_km").toBool();
+    ask_km=false;
+    plate_ini_flg=settings.value("plate_ini_flg").toBool();
+    Psifre=settings.value("Psifre").toString();
+    Float_setting=settings.value("Float_setting").toString();
+    Metre=settings.value("Metre").toString();
+    ABU_address=settings.value("ABU_address").toInt();
+    if(test)qDebug() <<"ABU_address"<<ABU_address;
+    syslog(LOG_DEBUG," LOAD_SETTING ABU_address %d",ABU_address);
+    cash_register_pump_no=ABU_address;
+    ABU_addr=79 + ABU_address;
+    if(test)qDebug() <<"ABU_address"<<ABU_addr;
+    syslog(LOG_DEBUG," LOAD_SETTING ABU_address+ %d",ABU_address);
+    serial_No.clear();
+    serial_No.append(QString::number(ABU_address).rightJustified(8,'0'));
+    pump[pumpNo].Fiscal_ID=serial_No;
+    if(test)qDebug() <<"pump[pumpNo].Fiscal_ID"<<pump[pumpNo].Fiscal_ID;
+    syslog(LOG_DEBUG," LOAD_SETTING Fiscal_ID %s",pump[pumpNo].Fiscal_ID.toHex().constData());
+    virtual_pumpno=settings.value("virtual_pumpno").toInt();
+    lock_day=settings.value("number_of_version").toInt();
+    if(lock_day<3){lock_day=3;}
+    if(lock_day>10){lock_day=10;}
+    if(test)qDebug() <<"number_of_version"<<lock_day;
+    if(Float_setting=="EVET")
+    {
+        unit_price_dot_index=settings.value("Unit_price_dot_index").toInt(&ok);
+        amount_dot_index=settings.value("Amount_dot_index").toInt(&ok);
+        volume_dot_index=settings.value("Volume_dot_index").toInt(&ok);
+    }
+    else
+    {
+        if(Metre=="BARANSAY")
+        {
+            unit_price_dot_index=3;
+            amount_dot_index=3;
+            volume_dot_index=3;
+        }
+        else if(Metre=="IPT")
+        {
+            unit_price_dot_index=3;
+            amount_dot_index=2;
+            volume_dot_index=2;
+        }
+        else if(Metre=="MITES")
+        {
+            unit_price_dot_index=3;
+            amount_dot_index=2;
+            volume_dot_index=2;
+        }
+
+    }
+
+
+    for(ll=1; ll<=Number_of_Nozzle;ll++)
+    {
+        QString string_uprice;
+        string_uprice=settings.value("Unit_price_"+QString::number(ll)).toString();
+        Unit_price_for_save[ll]=string_uprice.toLatin1();
+        Lastprice[ll]=Unit_price_for_save[ll];
+        if(test)qDebug() <<"Unit_price_"+QString::number(ll)<<Unit_price_for_save[ll];
+        syslog(LOG_DEBUG," LOAD_SETTING Unit_price_ %s %s",QString::number(ll).toLocal8Bit().constData(),Unit_price_for_save[ll].toHex().constData());
+        Unit_price=convert_format(Unit_price_for_save[ll],unit_price_dot_index);
+        dec_to_bcd(Unit_price.toInt()); // 4 byte 00 00 12 34
+        pump[pumpNo].nozzle[ll].unitprice[0]=bcd[2];
+        pump[pumpNo].nozzle[ll].unitprice[1]=bcd[1];
+        pump[pumpNo].nozzle[ll].unitprice[2]=bcd[0];
+        pump[pumpNo].nozzle[ll].Product_name=settings.value("Product_name_"+QString::number(ll)).toString();
+        if(test)qDebug() <<"Product_name_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].Product_name;
+        syslog(LOG_DEBUG," LOAD_SETTING Product_name_ %s %s",QString::number(ll).toLocal8Bit().constData(),pump[pumpNo].nozzle[ll].Product_name.toLocal8Bit().constData());
+        pump[pumpNo].nozzle[ll].BT_Volume=QByteArray::fromHex(settings.value("Begin_total_volume_"+QString::number(ll)).toByteArray());
+        if(test)qDebug() <<"Begin_total_volume_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].BT_Volume.toHex();
+        syslog(LOG_DEBUG," LOAD_SETTING Begin_total_volume_ %s %s",QString::number(ll).toLocal8Bit().constData(),pump[pumpNo].nozzle[ll].BT_Volume.toHex().constData());
+        pump[pumpNo].nozzle[ll].T_Volume=QByteArray::fromHex(settings.value("End_total_volume_"+QString::number(ll)).toByteArray());
+        if(test)qDebug() <<"End_total_volume_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].T_Volume.toHex();
+        syslog(LOG_DEBUG," LOAD_SETTING End_total_volume_ %s %s",QString::number(ll).toLocal8Bit().constData(),pump[pumpNo].nozzle[ll].T_Volume.toHex().constData());
+        pump[pumpNo].nozzle[ll].BT_Amount=QByteArray::fromHex(settings.value("Begin_total_amount_"+QString::number(ll)).toByteArray());
+        if(test)qDebug() <<"Begin_total_amount_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].BT_Amount.toHex();
+        syslog(LOG_DEBUG," LOAD_SETTING Begin_total_amount_ %s %s",QString::number(ll).toLocal8Bit().constData(),pump[pumpNo].nozzle[ll].BT_Amount.toHex().constData());
+        pump[pumpNo].nozzle[ll].T_Amount=QByteArray::fromHex(settings.value("End_total_amount_"+QString::number(ll)).toByteArray());
+        if(test)qDebug() <<"End_total_amount_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].T_Amount.toHex();
+        syslog(LOG_DEBUG," LOAD_SETTING Begin_total_amount_ %s %s",QString::number(ll).toLocal8Bit().constData(),pump[pumpNo].nozzle[ll].T_Amount.toHex().constData());
+
+        pump[pumpNo].nozzle[ll].USC_T_Volume=QByteArray::fromHex(settings.value("End_total_volume_USC_"+QString::number(ll)).toByteArray());
+        if(test)qDebug() <<"End_total_volume_USC_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].USC_T_Volume.toHex();
+        syslog(LOG_DEBUG," LOAD_SETTING End_total_volume_USC %s %s",QString::number(ll).toLocal8Bit().constData(),pump[pumpNo].nozzle[ll].USC_T_Volume.toHex().constData());
+
+        pump[pumpNo].nozzle[ll].USC_T_Amount=QByteArray::fromHex(settings.value("End_total_amount_USC_"+QString::number(ll)).toByteArray());
+        if(test)qDebug() <<"End_total_amount_USC_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].USC_T_Amount.toHex();
+        syslog(LOG_DEBUG," LOAD_SETTING End_total_amount_USC_ %s %s",QString::number(ll).toLocal8Bit().constData(),pump[pumpNo].nozzle[ll].USC_T_Amount.toHex().constData());
+
+
+        pump[pumpNo].nozzle[ll].filling_price_for_USC=QByteArray::fromHex(settings.value("filling_price_for_USC_"+QString::number(ll)).toByteArray());
+        pump[pumpNo].nozzle[ll].filling_volume_for_USC=QByteArray::fromHex(settings.value("filling_volume_for_USC_"+QString::number(ll)).toByteArray());
+        pump[pumpNo].nozzle[ll].filling_amount_for_USC=QByteArray::fromHex(settings.value("filling_amount_for_USC_"+QString::number(ll)).toByteArray());
+
+        if(pump[pumpNo].nozzle[ll].filling_price_for_USC=="")
+        {
+            pump[pumpNo].nozzle[ll].filling_price[0]=0;
+            pump[pumpNo].nozzle[ll].filling_price[1]=0;
+            pump[pumpNo].nozzle[ll].filling_price[2]=0;
+        }
+        else
+        {
+            pump[pumpNo].nozzle[ll].filling_price=pump[pumpNo].nozzle[ll].filling_price_for_USC;
+        }
+        if(pump[pumpNo].nozzle[ll].filling_volume_for_USC=="")
+        {
+            pump[pumpNo].nozzle[ll].filling_volume[0]=0;
+            pump[pumpNo].nozzle[ll].filling_volume[1]=0;
+            pump[pumpNo].nozzle[ll].filling_volume[2]=0;
+            pump[pumpNo].nozzle[ll].filling_volume[3]=0;
+        }
+        else
+        {
+            pump[pumpNo].nozzle[ll].filling_volume=pump[pumpNo].nozzle[ll].filling_volume_for_USC;
+        }
+        if(pump[pumpNo].nozzle[ll].filling_amount_for_USC=="")
+        {
+            pump[pumpNo].nozzle[ll].filling_amount[0]=0;
+            pump[pumpNo].nozzle[ll].filling_amount[1]=0;
+            pump[pumpNo].nozzle[ll].filling_amount[2]=0;
+            pump[pumpNo].nozzle[ll].filling_amount[3]=0;
+        }
+        else
+        {
+            pump[pumpNo].nozzle[ll].filling_amount=pump[pumpNo].nozzle[ll].filling_amount_for_USC;
+        }
+        qDebug() <<"filling_price_for_USC_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].filling_price.toHex();
+        qDebug() <<"filling_volume_for_USC_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].filling_volume.toHex();
+        qDebug() <<"filling_amount_for_USC_"+QString::number(ll)<<pump[pumpNo].nozzle[ll].filling_amount.toHex();
+    }
+
+    Coding_key[0]=0x41;
+    Coding_key[1]=0x4D;
+    Coding_key[2]=0x49;
+    Coding_key[3]=0x4E;
+    Version_config_ini=settings.value(" ").toString();
+    if(test)qDebug() <<"Float_setting"<<Float_setting;
+    syslog(LOG_DEBUG," LOAD_SETTING Float_setting %s",Float_setting.toLocal8Bit().constData());
+    if(test)qDebug() <<"unit_price_dot_index"<<QString::number(unit_price_dot_index);
+    syslog(LOG_DEBUG," LOAD_SETTING unit_price_dot_index %s",QString::number(unit_price_dot_index).toLocal8Bit().constData());
+    if(test)qDebug() <<"amount_dot_index"<<QString::number(amount_dot_index);
+    syslog(LOG_DEBUG," LOAD_SETTING amount_dot_index %s",QString::number(amount_dot_index).toLocal8Bit().constData());
+    if(test)qDebug() <<"volume_dot_index"<<QString::number(volume_dot_index);
+    syslog(LOG_DEBUG," LOAD_SETTING volume_dot_index %s",QString::number(volume_dot_index).toLocal8Bit().constData());
+    
+    if(test)qDebug() <<"printing_header_data[0]"<<printing_header_data[0];
+    if(test)qDebug() <<"printing_header_data[1]"<<printing_header_data[1];
+    if(test)qDebug() <<"printing_header_data[2]"<<printing_header_data[2];
+    if(test)qDebug() <<"printing_header_data[3]"<<printing_header_data[3];
+    if(test)qDebug() <<"End_info[0]"<<End_info[0];
+    if(test)qDebug() <<"End_info[1]"<<End_info[1];
+    syslog(LOG_DEBUG," LOAD_SETTING printing_header_data[0] %s",printing_header_data[0].toLocal8Bit().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING printing_header_data[1] %s",printing_header_data[1].toLocal8Bit().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING printing_header_data[2] %s",printing_header_data[2].toLocal8Bit().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING printing_header_data[3] %s",printing_header_data[3].toLocal8Bit().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING End_info[0] %s",End_info[0].toLocal8Bit().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING End_info[1] %s",End_info[1].toLocal8Bit().constData());
+
+
+    if(test)qDebug() <<"Card_reader_chose"<<Card_reader_chose;
+    if(test)qDebug() <<"Preset_Control_flg"<<Preset_Control_flg;
+    if(test)qDebug() <<"table_name"<<table_name;
+    if(test)qDebug() <<"last_customer_plate"<<pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].PLATE;
+    if(test)qDebug() <<"number_of_salessave"<<number_of_salessave;
+    if(test)qDebug() <<"pump_sta"<<pump_sta;
+    if(test)qDebug() <<"saved_unit_price"<<saved_unit_price;
+    if(test)qDebug() <<"ask_km"<<ask_km;
+    if(test)qDebug() <<"plate_ini_flg"<<plate_ini_flg;
+    if(test)qDebug() <<"Metre_Protocol"<<Metre;
+    if(test)qDebug() <<"Nozzle_up_flg"<<Nozzle_up_flg;
+    if(test)qDebug() <<"Pump_Filling_status"<<Pump_Filling_status;
+
+
+    syslog(LOG_DEBUG," LOAD_SETTING Card_reader_chose %d",Card_reader_chose);
+    syslog(LOG_DEBUG," LOAD_SETTING Preset_Control_flg %d",Preset_Control_flg);
+    syslog(LOG_DEBUG," LOAD_SETTING table_name %s",table_name.toLocal8Bit().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING last_customer_plate %s",pump[pumpNo].nozzle[DCR_par.DCR_Nozzle_Number].PLATE.toHex().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING number_of_salessave %d",number_of_salessave);
+    syslog(LOG_DEBUG," LOAD_SETTING pump_sta %d",pump_sta);
+    syslog(LOG_DEBUG," LOAD_SETTING saved_unit_price %s",saved_unit_price.toHex().constData());
+    syslog(LOG_DEBUG," LOAD_SETTING ask_km %d",ask_km);
+    syslog(LOG_DEBUG," LOAD_SETTING plate_ini_flg %d",plate_ini_flg);
+    syslog(LOG_DEBUG," LOAD_SETTING Metre_Protocol %d",Metre.toLocal8Bit().constData());
+
+    
+    /////////////////////////////////
+    targetPath=settings.value("Gprs_Server").toString();
+    savePath=settings.value("savePath").toString(); // root/Desktop/Yeni
+    targetPath.append("/TankerUpdate");
+    timeoutTime=settings.value("timeoutTime").toInt();
+    downloadIniFile=settings.value("downloadIniFile").toString(); // version.txt
+    downloadExFile=settings.value("downloadExFile").toString(); // PCR17_v4.zip
+    saveIniFile=settings.value("saveIniFile").toString();    // version.ini
+    currentPath=settings.value("currentPath").toString(); // /root/Desktop/Version_updater/Updater
+    MyVersionDate=settings.value("MyVersionDate").toString();
+    Myversion=settings.value("Myversion").toString();
+    licence=settings.value("Licence").toString();
+    server=settings.value("Gprs_Server").toString();
+    //imei=settings.value("Gprs_Imei").toString();
+    debug_flg=settings.value("debug_flg").toBool();
+    settingPath=settings.value("settingPath").toString();
+    databasePath=settings.value("databasePath").toString();
+    totalLT=settings.value("totalLT").toString();
+    zipFile=savePath;
+    zipFile.append(downloadExFile);
+    check_dowloadIniFile=savePath;
+    check_dowloadIniFile.append(saveIniFile);
+    sync();
+    system("sync");
+}
+
+QString getMacAddress()
+{
+    
+    QNetworkInterface eth0=QNetworkInterface::interfaceFromName("eth0");
+    QList<QNetworkAddressEntry>entries=eth0.addressEntries();
+    QNetworkAddressEntry entry=entries.first();
+    QHostAddress ip=entry.ip();
+    if(ip.toString().contains('.'))
+        Static_ip=ip.toString();
+    else Static_ip="OFFLINE";
+    macAddress=eth0.hardwareAddress();
+    if(!entries.isEmpty()){
+
+        return eth0.hardwareAddress();
+    }
+
+}
+
+
+int main(int argc, char *argv[])
+{
+    QApplication a(argc, argv);
+    a.setOverrideCursor(Qt::BlankCursor);
+    if(settings.value("change_file").toInt()!=1)
+    {
+    convert_bytearray_to_string();
+    convert_setting();
+    }
+    loadSettings();
+    system("service rsyslog restart");
+    system("mv -f /var/log/syslog /var/www/html/syslog.txt");
+    system("chmod 777 /var/www/html/*");
+    if(IETT==true)
+    {
+        qDebug()<<"2018.05.18-IETT-CRC";
+    }
+    else
+    {
+        qDebug()<<"2018.05.18-IETT-Crypted";
+    }
+
+    if(!QDir("/root/Database").exists())
+    {
+        QDir().mkdir("/root/Database");
+    }
+    constructor_db.setDatabaseName("/root/Database/Iett_database");
+    nozzle_db.setDatabaseName("/root/Database/Iett_database");
+
+    count_id_db.setDatabaseName("/root/Database/Iett_database");
+
+    update_nozzle_price_db.setDatabaseName("/root/Database/Iett_database");
+    update_nozzle_product_db.setDatabaseName("/root/Database/Iett_database");
+    update_nozzle_total_db.setDatabaseName("/root/Database/Iett_database");
+
+    nozzle_product_id_db.setDatabaseName("/root/Database/Iett_database");
+    nozzle_values_db.setDatabaseName("/root/Database/Iett_database");
+    nozzle_product_price_db.setDatabaseName("/root/Database/Iett_database");
+    nozzle_total_amount_db.setDatabaseName("/root/Database/Iett_database");
+    nozzle_total_volume_db.setDatabaseName("/root/Database/Iett_database");
+    nozzle_total_sales_db.setDatabaseName("/root/Database/Iett_database");
+
+    insert_sales_db.setDatabaseName("/root/Database/Iett_database");
+    delete_table_db.setDatabaseName("/root/Database/Iett_database");
+    sales_date_db.setDatabaseName("/root/Database/Iett_database");
+    sales_status_db.setDatabaseName("/root/Database/Iett_database");
+    update_status_db.setDatabaseName("/root/Database/Iett_database");
+    update_dateclock_db.setDatabaseName("/root/Database/Iett_database");
+    update_sales_db.setDatabaseName("/root/Database/Iett_database");
+    update_plate_db.setDatabaseName("/root/Database/Iett_database");
+    total_sales_db.setDatabaseName("/root/Database/Iett_database");
+    sales_plate_db.setDatabaseName("/root/Database/Iett_database");
+    sales_id_db.setDatabaseName("/root/Database/Iett_database");
+    controlsales_id_db.setDatabaseName("/root/Database/Iett_database");
+    whitelist_db.setDatabaseName("/root/Database/Iett_database");
+
+    person_db.setDatabaseName("/root/Database/Iett_database");
+    control_person_db.setDatabaseName("/root/Database/Iett_database");
+    show_person_db.setDatabaseName("/root/Database/Iett_database");
+    show_nozzle_db.setDatabaseName("/root/Database/Iett_database");
+    show_whitelist_db.setDatabaseName("/root/Database/Iett_database");
+    show_sales_db.setDatabaseName("/root/Database/Iett_database");
+
+
+    LCDtimer1=new QTimer;
+    cusscr= new CustomerScreen();
+    LCDThread=new QThread();
+    QObject::connect(LCDtimer1,SIGNAL(timeout()),cusscr,SLOT(LCD_refresh()));
+    LCDtimer1->start(300);
+    cusscr->moveToThread(LCDThread);
+    LCDThread->start();
+    MainWindow w;
+    w.show();
+
+
+    QCryptographicHash calculateMD5(QCryptographicHash::Sha256);
+    calculateMD5.addData(getMacAddress().toUtf8());
+
+    if(Version_config_ini!="0")
+    {
+        if(database->NozzleValues())
+        {
+            if(test)qDebug()<<"Config_values_Read";
+            syslog(LOG_DEBUG," LOAD_SETTING Config_values_Read");
+        }
+        else
+        {
+            if(test)qDebug()<<"Config_values_error";
+            syslog(LOG_DEBUG," LOAD_SETTING Config_values_error");
+        }
+    }
+    else
+    {
+        config_error=true;
+        configuration=true;
+    }
+
+    int currentYear = QDateTime::currentDateTime().toString("yyyy").toInt();
+
+    if(currentYear > 2017)
+    {
+        MACaddr=calculateMD5.result().toHex();
+        LCD_status=1;
+        if(calculateMD5.result().toHex()==licence)
+        {
+            //CLRC
+            QThread clrcThread;
+            CLRC clrc;
+            clrc.I2CStartUp();
+            clrc.clrctoThread(clrcThread);
+            clrc.moveToThread(&clrcThread);
+            clrcThread.start();
+
+            //main_routine
+            QThread mainThread;
+            main_routine mt;
+            mt.maintoThread(mainThread);
+            mt.moveToThread(&mainThread);
+            mainThread.start();
+
+
+            //        //UPDATER
+
+            QThread updaterThread;
+            updater update;
+            update.updatetoThread(updaterThread);
+            update.moveToThread(&updaterThread);
+            updaterThread.start();
+
+            initserial(1);
+
+            initserial(2);
+
+            initserial(3);
+
+            initserial(4);
+
+            QThread TcpThread;
+            MyTcpSocket mts;
+            mts.TcptoThread(TcpThread);
+            mts.moveToThread(&TcpThread);
+            TcpThread.start();
+
+            licenceCheck=0;
+
+            return a.exec();
+
+        }
+        else
+        {
+            if(test)qDebug()<<"Lisans Hatası";
+            syslog(LOG_DEBUG," LOAD_SETTING Lisans Hatası");
+
+            LCD_status=13;
+            LCD_refresh_flg=1;
+            licenceCheck=1;
+
+
+            return a.exec();
+        }
+    }
+    else
+    {
+        if(test) qDebug()<<"Saat-Tarih Hatası";
+        syslog(LOG_DEBUG," LOAD_SETTING Saat-Tarih Hatası");
+        LCD_status=35;
+        LCD_refresh_flg=1;
+        return a.exec();
+    }
+}
